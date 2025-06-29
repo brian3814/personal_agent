@@ -76,14 +76,14 @@ class ArxivResearchAgentExecutor(AgentExecutor):
                         new_agent_text_message(
                             'Reaching an unexpected state',
                             task.contextId,
-                            task.id,
+                            task.id,    
                         ),
                         final=True,
                     )
                     break
             else:
                 # Emit the appropriate events
-                updater.add_artifact(
+                await updater.add_artifact(
                     [Part(root=TextPart(text=item['content']))], name='form'
                 )
                 await updater.complete()

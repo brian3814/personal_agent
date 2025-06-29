@@ -1,11 +1,9 @@
 import os
-import subprocess
-import threading
-import atexit
+from contextlib import AsyncExitStack
 from typing import Optional
 
 from fastmcp.utilities.logging import get_logger
-from mcp import StdioServerParameters
+from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 logger = get_logger(__name__)
@@ -23,41 +21,38 @@ class ArxivMCPServerManager:
         *, 
         storage_path: Optional[str] = None
     ):
-        self.storage_path = storage_path or os.path.expanduser("~/.arxiv-mcp-server/papers")        
-        self.stdio_client = None
-        self.start_server()
-    
-    def start_server(self):
-        try:
-            stdio_params = StdioServerParameters(
-                command='uv',
-                args=[
-                    'tool',
-                    'run',
-                    'arxiv-mcp-server',
-                    '--storage-path', self.storage_path
-                ],
-                env=os.environ.copy()
-            )
+        self.storage_path = storage_path or os.path.expanduser("~/.arxiv-mcp-server/papers")
+        self.client = None
+        self.read_stream = None
+        self.write_stream = None
+        self.session: ClientSession = None
+        self.exit_stack = AsyncExitStack()
 
-            self.stdio_client = stdio_client(stdio_params)
-                    
-        except Exception as e:
-            logger.error(f"Failed to start ArXiv MCP server: {e}")
-            raise
-            
-    def __enter__(self):
-        """Context manager entry"""
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit with cleanup"""
-        self.shutdown()
+    async def get_session(self):
+        stdio_params = StdioServerParameters(
+            command='uv',
+            args=[
+                'tool',
+                'run',
+                'arxiv-mcp-server',
+                '--storage-path', self.storage_path
+            ],
+        )
 
-def create_server_manager(
-    *, 
-    storage_path: Optional[str] = None, 
-    host: str = 'localhost',
-    port: int = 10002
-) -> ArxivMCPServerManager:
-    return ArxivMCPServerManager(storage_path=storage_path)
+        self.client = stdio_client(stdio_params)
+        self.read_stream, self.write_stream = await self.exit_stack.enter_async_context(self.client)
+        self.session = await self.exit_stack.enter_async_context(
+            ClientSession(self.read_stream, self.write_stream)
+        )
+
+        await self.session.initialize()
+
+    async def shutdown(self):
+        print("Shutting down ArxivMCPServerManager")
+
+        if self.session:
+            await self.session.close()
+        if self.client:
+            await self.client.__aexit__(None, None, None)
+
+        print("ArxivMCPServerManager shutdown complete")
