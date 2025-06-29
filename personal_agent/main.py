@@ -127,7 +127,7 @@ async def query(q: str, request: Request):
         media_type="text/event-stream"
     )
 
-@app.post("/query/stream")
+@app.post("/query")
 async def query(query: Query, request: Request):
     user_id = request.cookies.get("user_id", DEFAULT_USER_ID)
     session_id = await session_manager.get_session_id(user_id)
