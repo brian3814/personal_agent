@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import argparse
 from textwrap import dedent
 
 from fastapi import FastAPI, Request
@@ -21,18 +22,22 @@ app = FastAPI()
 mcp = FastApiMCP(app, name="personalAgent", description="Personal Agent")
 mcp.mount()
 
-root_agent = Agent(
-    name="root_agent",
-    model="gemini-2.0-flash-001",
-    description="The root agent of the personal agent",
-    instruction=dedent("""\
-        You are the root agent of the personal agent.
-        You are responsible for coordinating the other agents.
-    """),
-    sub_agents=[
-        ArxivResearchAgent().agent
-    ]
-)
+session_manager = None
+runner = None
+
+def create_root_agent(model="gemini-2.0-flash-001"):
+    return Agent(
+        name="root_agent",
+        model=model,
+        description="The root agent of the personal agent",
+        instruction=dedent("""\
+            You are the root agent of the personal agent.
+            You are responsible for coordinating the other agents.
+        """),
+        sub_agents=[
+            ArxivResearchAgent().agent
+        ]
+    )
 
 class SessionManager:
     def __init__(self):
@@ -88,13 +93,12 @@ class SessionManager:
         
         return session_id
 
-session_manager = SessionManager()
-
-runner = Runner(
-    app_name="personal_agent",
-    agent=root_agent,
-    session_service=session_manager.session_service,
-)
+def create_runner(agent):
+    return Runner(
+        app_name="personal_agent",
+        agent=agent,
+        session_service=session_manager.session_service,
+    )
 
 async def process_response(response_generator):
     async for event in response_generator:
@@ -145,8 +149,24 @@ async def query(query: Query, request: Request):
     )
 
 def main():
+    global session_manager, runner
+    
+    parser = argparse.ArgumentParser(description="Personal Agent Server")
+    parser.add_argument("--model", default="gemini-2.0-flash-001", 
+                       help="LLM model to use (default: gemini-2.0-flash-001)")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--port", type=int, default=5050, help="Port to bind to")
+    
+    args = parser.parse_args()
+    
+    session_manager = SessionManager()
+    root_agent = create_root_agent(model=args.model)
+    runner = create_runner(root_agent)
+    
+    print(f"Starting Personal Agent with model: {args.model}")
+    
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5050)
+    uvicorn.run(app, host=args.host, port=args.port)
 
 if __name__ == "__main__":
     main()
