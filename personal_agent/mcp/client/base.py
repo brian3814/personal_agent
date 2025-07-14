@@ -29,7 +29,7 @@ class BaseMcpClient:
             return
 
         self._initializing = True
-        
+
         if self.session is None:
             await self.server_manager.get_session()
             self.session = self.server_manager.session

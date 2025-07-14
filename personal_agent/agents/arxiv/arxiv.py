@@ -22,12 +22,24 @@ class ArxivResearchAgent:
     def __init__(
         self, 
         *, 
-        agent: Agent = None, 
+        storage_path: str = './arxiv-mcp-server/papers'
     ):
+        self.storage_path = storage_path
+        self.mcp_server = ArxivMCPServerManager(storage_path=self.storage_path)
+        """
         self.mcp_client = ArxivMCPClient(
-            storage_path='./arxiv-mcp-server/papers'
+            storage_path='./arxiv-mcp-server/papers',
+            server_manager=self.mcp_server
         )
-        self.agent = agent or self._build_agent()
+        """
+
+        self.agent = None
+        self.toolset = None
+        self.exit_stack = None
+
+    def start(self):
+        self.toolset = self.mcp_server.get_toolset()
+        self.agent = self._build_agent()
 
     def _build_agent(self) -> Agent:
         INSTRUCTION = dedent("""\
@@ -61,7 +73,7 @@ class ArxivResearchAgent:
             **arXiv categories**:
             You can find the list of categories here: https://arxiv.org/category_taxonomy
         """)
-            
+                    
         return Agent(
             model='gemini-2.0-flash-001',
             name='arxiv_research_agent',
@@ -72,11 +84,9 @@ class ArxivResearchAgent:
             """),
             instruction=INSTRUCTION,
             tools=[
-                self.mcp_client.search_papers,
-                self.mcp_client.download_paper,
-                self.mcp_client.read_paper,
-                self.mcp_client.list_papers,
-                self.mcp_client.deep_analysis,
+                self.toolset
             ]
         )
     
+    async def cleanup(self):
+        await self.mcp_server.shutdown()

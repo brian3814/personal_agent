@@ -20,4 +20,3 @@ Then you can communicate through continuous api calls in the browser:
 
 ## TODO
 * Add UI to demonstrate communications
-* Handle permission to folder to enable paper downloading

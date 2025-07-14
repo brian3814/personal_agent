@@ -18,14 +18,41 @@ class ArxivMCPClient(BaseMcpClient):
     def __init__(
         self, 
         *, 
-        storage_path: Optional[str] = None, 
-        server_manager: Optional[ArxivMCPServerManager] = None
+        server_manager: Optional[ArxivMCPServerManager] = None,
+        storage_path: Optional[str] = None
     ):
         self.storage_path = storage_path or os.path.expanduser("~/.arxiv-mcp-server/papers")
-        self.server_manager = server_manager or ArxivMCPServerManager(storage_path=storage_path)
+
+        if server_manager is None:
+            self.server_manager = ArxivMCPServerManager(storage_path=self.storage_path)
+        else:
+            self.server_manager = server_manager
+
         self.session: ClientSession = None  
         self._initialized = False
         self._initializing = False
+
+    async def __aenter__(self):
+        await self._ensure_mcp_connection()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+    async def close(self):
+        """Properly close the MCP client but not the shared server manager"""
+        if self._initialized and self.session:
+            try:
+                # Close session but don't shutdown server manager
+                await self.session.__aexit__(None, None, None)
+            except Exception as e:
+                logger.warning(f"Error closing session: {e}")
+        
+        # Don't shutdown server_manager here if it's shared
+        # Only shutdown if this client owns the server_manager
+        
+        self._initialized = False
+        self.session = None
 
     async def call_tool(self, tool_name: str, params: dict) -> dict:
         await self._ensure_mcp_connection()
@@ -91,6 +118,7 @@ class ArxivMCPClient(BaseMcpClient):
         return await self.call_tool("search_papers", params)
     
     async def download_paper(self, paper_id: str) -> dict:
+        """Download a paper using persistent MCP client"""
         return await self.call_tool("download_paper", {"paper_id": paper_id})
     
     async def read_paper(self, paper_id: str) -> dict:

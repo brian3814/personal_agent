@@ -3,8 +3,13 @@ from contextlib import AsyncExitStack
 from typing import Optional
 
 from fastmcp.utilities.logging import get_logger
-from mcp import ClientSession, StdioServerParameters
+from mcp import ClientSession
 from mcp.client.stdio import stdio_client
+from google.adk.tools.mcp_tool.mcp_toolset import (
+    MCPToolset, 
+    StdioConnectionParams,
+    StdioServerParameters
+)
 
 logger = get_logger(__name__)
 
@@ -28,7 +33,27 @@ class ArxivMCPServerManager:
         self.session: ClientSession = None
         self.exit_stack = AsyncExitStack()
 
+    def get_toolset(self):
+        toolset = MCPToolset(connection_params=StdioConnectionParams(
+            server_params=StdioServerParameters(
+                command='uv',
+                args=[
+                    'tool',
+                    'run',
+                    'arxiv-mcp-server',
+                    '--storage-path', self.storage_path
+                ],
+            )
+        ))
+
+        self.toolset = toolset
+
+        return self.toolset
+
     async def get_session(self):
+        if self.session:
+            return
+        
         stdio_params = StdioServerParameters(
             command='uv',
             args=[
@@ -48,11 +73,26 @@ class ArxivMCPServerManager:
         await self.session.initialize()
 
     async def shutdown(self):
-        print("Shutting down ArxivMCPServerManager")
+        logger.info("Shutting down ArxivMCPServerManager")
 
-        if self.session:
-            await self.session.close()
-        if self.client:
-            await self.client.__aexit__(None, None, None)
+        try:
+            if self.exit_stack:
+                await self.exit_stack.aclose()
+        except Exception as e:
+            logger.warning(f"Error during shutdown: {e}")
 
-        print("ArxivMCPServerManager shutdown complete")
+        try:
+            # Use the exit stack to properly close all contexts
+            # This will handle the session and client cleanup
+            await self.exit_stack.aclose()
+            
+            # Reset all references
+            self.session = None
+            self.read_stream = None
+            self.write_stream = None
+            self.client = None
+            
+        except Exception as e:
+            logger.warning(f"Error during shutdown: {e}")
+        
+        logger.info("ArxivMCPServerManager shutdown complete")

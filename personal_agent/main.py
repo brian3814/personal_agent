@@ -2,6 +2,7 @@ import os
 import time
 import json
 import argparse
+import signal
 from textwrap import dedent
 
 from fastapi import FastAPI, Request
@@ -12,6 +13,7 @@ from google.adk import Agent
 from google.adk.tools.agent_tool import AgentTool
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
+from contextlib import asynccontextmanager
 
 from personal_agent.agents import ArxivResearchAgent
 from personal_agent.query import Query
@@ -24,8 +26,16 @@ mcp.mount()
 
 session_manager = None
 runner = None
+sub_agents = []
 
-def create_root_agent(model="gemini-2.0-flash-001"):
+def create_root_agent(
+    *,
+    model="gemini-2.0-flash-001",
+    sub_agents=None
+):
+    if sub_agents is None:
+        sub_agents = []
+
     return Agent(
         name="root_agent",
         model=model,
@@ -34,9 +44,7 @@ def create_root_agent(model="gemini-2.0-flash-001"):
             You are the root agent of the personal agent.
             You are responsible for coordinating the other agents.
         """),
-        sub_agents=[
-            ArxivResearchAgent().agent
-        ]
+        sub_agents=sub_agents
     )
 
 class SessionManager:
@@ -110,6 +118,15 @@ async def process_response(response_generator):
 
             yield f'event: message\ndata: {data}\n\n'
 
+@asynccontextmanager
+async def lifespan(app):
+    arxiv_agent = ArxivResearchAgent()
+    app.state.arxiv_agent = arxiv_agent
+    yield
+    await arxiv_agent.cleanup()
+
+app = FastAPI(lifespan=lifespan)
+
 @app.get("/")
 def greeting():
     return {"message": "Hello, I'm your personal assistant!"}
@@ -136,7 +153,7 @@ async def query(query: Query, request: Request):
     user_id = request.cookies.get("user_id", DEFAULT_USER_ID)
     session_id = await session_manager.get_session_id(user_id)
 
-    content = Content(role="user", parts=[Part(text=query.text)])
+    content = Content(role="user", parts=[Part(text=query.query)])
     response = runner.run_async(
         new_message=content,
         user_id=user_id,
@@ -148,8 +165,23 @@ async def query(query: Query, request: Request):
         media_type="text/event-stream"
     )
 
+def handle_signal(signum, frame):
+    print(f"Received signal {signum}, cleaning up...")
+    for agent in sub_agents:
+        if hasattr(agent, 'cleanup'):
+            agent.cleanup()
+    exit(0)
+
+def get_sub_agents():
+    arxiv_agent = ArxivResearchAgent()
+    arxiv_agent.start()
+
+    return [
+        arxiv_agent.agent
+    ]
+
 def main():
-    global session_manager, runner
+    global session_manager, runner, sub_agents
     
     parser = argparse.ArgumentParser(description="Personal Agent Server")
     parser.add_argument("--model", default="gemini-2.0-flash-001", 
@@ -160,13 +192,20 @@ def main():
     args = parser.parse_args()
     
     session_manager = SessionManager()
-    root_agent = create_root_agent(model=args.model)
+    sub_agents = get_sub_agents()
+    root_agent = create_root_agent(model=args.model, sub_agents=sub_agents)
     runner = create_runner(root_agent)
     
     print(f"Starting Personal Agent with model: {args.model}")
     
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+
+    start_server(args.host, args.port)
+
+def start_server(host, port):
     import uvicorn
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=host, port=port)
 
 if __name__ == "__main__":
     main()
