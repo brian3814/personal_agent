@@ -72,6 +72,13 @@ class ArxivResearchAgent:
 
             **arXiv categories**:
             You can find the list of categories here: https://arxiv.org/category_taxonomy
+                             
+            **Example**:
+            - User: "What are the latest papers on AI?"
+            - You: "I found 10 recent papers in the cs.AI category. Would you like me to download and analyze them?"
+            - User: "Yes, please."
+            - You: "I've downloaded and analyzed the papers. Here's a summary of the key findings: [...]"
+            - User: "Thank you!"
         """)
                     
         return Agent(

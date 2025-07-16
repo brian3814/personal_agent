@@ -5,7 +5,8 @@ import argparse
 import signal
 from textwrap import dedent
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi_mcp import FastApiMCP
 from fastapi.responses import StreamingResponse
 from google.genai.types import Content, Part
@@ -20,9 +21,31 @@ from personal_agent.query import Query
 
 DEFAULT_USER_ID = "user_id"
 
-app = FastAPI()
-mcp = FastApiMCP(app, name="personalAgent", description="Personal Agent")
-mcp.mount()
+user_sessions = {}
+sessions = {}
+session_last_active = {}
+session_timeout = 3 * 60 * 60  # 3 hours
+
+@asynccontextmanager
+async def lifespan(app):
+    arxiv_agent = ArxivResearchAgent()
+    app.state.arxiv_agent = arxiv_agent
+    yield
+    await arxiv_agent.cleanup()
+
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173"
+    ],
+    allow_credentials=False,  # Disable credentials for now
+    allow_methods=["*"],
+    allow_headers=[
+        "*"
+    ],
+    expose_headers=["*"]
+)
 
 session_manager = None
 runner = None
@@ -108,24 +131,82 @@ def create_runner(agent):
         session_service=session_manager.session_service,
     )
 
+
+
+def check_session(user_id: str):
+    return user_id in user_sessions
+
+def update_session_activity(self, user_id: str):
+    self.session_last_active[user_id] = time.time()
+
+def clear_expired_sessions(self):
+    current_time = time.time()
+    expired_users = []
+
+    for user_id, last_active in self.session_last_active.items():
+        if current_time - last_active > self.session_timeout:
+            expired_users.append(user_id)
+
+    for user_id in expired_users:
+        session_id = self.user_sessions.pop(user_id, None)
+        if session_id:
+            self.sessions.pop(session_id, None)
+            self.session_last_active.pop(user_id, None)
+
+
 async def process_response(response_generator):
-    async for event in response_generator:
-        if hasattr(event, 'content'):
-            data = json.dumps({
-                'role': 'assistant',
-                'content': str(event.content)
-            }, ensure_ascii=False)
+    def serialize_tool_response(result):
+        if result is None:
+            return 'null'
 
-            yield f'event: message\ndata: {data}\n\n'
+        if isinstance(result, (str, int, float, bool)):
+            return str(result)
+        
+        if isinstance(result, (dict, list)):
+            try:
+                return json.dumps(result, ensure_ascii=False)
+            except:
+                return str(result)
 
-@asynccontextmanager
-async def lifespan(app):
-    arxiv_agent = ArxivResearchAgent()
-    app.state.arxiv_agent = arxiv_agent
-    yield
-    await arxiv_agent.cleanup()
+        if hasattr(result, '__dict__'):
+            try:
+                return json.dumps(result.__dict__, ensure_ascii=False)
+            except:
+                pass
+            
+        return str(result)
+    
+    try:    
+        async for event in response_generator:
+            if hasattr(event, "content") and hasattr(event.content, "parts"):
+                function_calls = event.get_function_calls() if hasattr(event, "get_function_calls") else []
+                
+                if function_calls:
+                    for call in function_calls:
+                        yield f"event: tool_call\ndata: {json.dumps({'name': call.name, 'arguments': call.args}, ensure_ascii=False)}\n\n"
+                
+                function_responses = event.get_function_responses() if hasattr(event, "get_function_responses") else []
+                
+                if function_responses:
+                    for response in function_responses:
+                        yield f"event: tool_result\ndata: {json.dumps({'name': response.name, 'result': 'Processing tool result'}, ensure_ascii=False)}\n\n"
+                
+                if event.content.parts and hasattr(event.content.parts[0], "text"):
+                    text_content = event.content.parts[0].text
+                    if text_content:
+                        role = "assistant"
+                        if getattr(event, "author", None) == "user":
+                            role = "user"
+                        
+                        yield f"event: message\ndata: {json.dumps({'role': role, 'content': text_content}, ensure_ascii=False)}\n\n"
+            
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-app = FastAPI(lifespan=lifespan)
+@app.options("/{path:path}")
+async def options_handler(request: Request, path: str):
+    return {"message": "OK"}
 
 @app.get("/")
 def greeting():
@@ -145,7 +226,14 @@ async def query(q: str, request: Request):
 
     return StreamingResponse(
         process_response(response), 
-        media_type="text/event-stream"
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
     )
 
 @app.post("/query")
@@ -161,7 +249,7 @@ async def query(query: Query, request: Request):
     )
 
     return StreamingResponse(
-        process_response(response), 
+        process_response(user_id, response), 
         media_type="text/event-stream"
     )
 
