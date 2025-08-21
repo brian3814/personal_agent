@@ -53,9 +53,24 @@ npm run preview  # Preview production build
    export GOOGLE_API_KEY={your_api_key}
    ```
 
-2. Install Python dependencies via uv (pyproject.toml defines dependencies)
+2. (Optional) Set up Langfuse tracing for LLM observability:
+   ```bash
+   export LANGFUSE_PUBLIC_KEY={your_langfuse_public_key}
+   export LANGFUSE_SECRET_KEY={your_langfuse_secret_key}
+   export LANGFUSE_HOST=https://cloud.langfuse.com  # or your self-hosted instance
+   ```
 
-3. The server runs on port 5050 by default, frontend dev server on 5173
+3. Install Python dependencies via uv (pyproject.toml defines dependencies)
+
+4. The server runs on port 5050 by default, frontend dev server on 5173
+
+## LLM Observability
+
+The system includes optional Langfuse integration for tracing LLM calls and analyzing performance:
+- **Automatic Tracing**: All user queries and agent responses are automatically traced
+- **Environment Variables**: Set `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` to enable
+- **Trace Structure**: Each user query creates a trace with spans for different agent operations
+- **Model Tracking**: Automatically logs model usage, inputs, and outputs
 
 ## Key Implementation Details
 

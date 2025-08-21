@@ -11,3 +11,5 @@ wheels/
 
 # Local files
 arxiv-mcp-server/papers/*
+.env
+.vscode

@@ -4,6 +4,10 @@ import json
 import argparse
 import signal
 from textwrap import dedent
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from fastapi import FastAPI, Request, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +22,7 @@ from contextlib import asynccontextmanager
 
 from personal_agent.agents import ArxivResearchAgent
 from personal_agent.query import Query
+from personal_agent.tracing import tracing_manager, create_trace, log_generation
 
 DEFAULT_USER_ID = "user_id"
 
@@ -154,7 +159,7 @@ def clear_expired_sessions(self):
             self.session_last_active.pop(user_id, None)
 
 
-async def process_response(response_generator):
+async def process_response(response_generator, trace=None):
     def serialize_tool_response(result):
         if result is None:
             return 'null'
@@ -176,7 +181,9 @@ async def process_response(response_generator):
             
         return str(result)
     
-    try:    
+    try:
+        collected_response = []
+        
         async for event in response_generator:
             if hasattr(event, "content") and hasattr(event.content, "parts"):
                 function_calls = event.get_function_calls() if hasattr(event, "get_function_calls") else []
@@ -198,11 +205,26 @@ async def process_response(response_generator):
                         if getattr(event, "author", None) == "user":
                             role = "user"
                         
+                        # Collect response text for tracing
+                        if role == "assistant":
+                            collected_response.append(text_content)
+                        
                         yield f"event: message\ndata: {json.dumps({'role': role, 'content': text_content}, ensure_ascii=False)}\n\n"
-            
+        
+        # Log the complete response to trace
+        if trace and collected_response:
+            log_generation(
+                trace_id=trace.id if hasattr(trace, 'id') else None,
+                name="agent_response",
+                output_data={"response": "".join(collected_response)},
+                model="gemini-2.0-flash-001"
+            )
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Flush traces at the end of the response
+        tracing_manager.flush()
 
 @app.options("/{path:path}")
 async def options_handler(request: Request, path: str):
@@ -217,6 +239,13 @@ async def query(q: str, request: Request):
     user_id = request.cookies.get("user_id", DEFAULT_USER_ID)
     session_id = await session_manager.get_session_id(user_id)
 
+    # Create trace for the query
+    trace = create_trace(
+        name="user_query",
+        input_data={"query": q, "method": "GET"},
+        user_id=user_id
+    )
+
     content = Content(role="user", parts=[Part(text=q)])
     response = runner.run_async(
         new_message=content,
@@ -225,7 +254,7 @@ async def query(q: str, request: Request):
     )
 
     return StreamingResponse(
-        process_response(response), 
+        process_response(response, trace), 
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -241,6 +270,13 @@ async def query(query: Query, request: Request):
     user_id = request.cookies.get("user_id", DEFAULT_USER_ID)
     session_id = await session_manager.get_session_id(user_id)
 
+    # Create trace for the query
+    trace = create_trace(
+        name="user_query",
+        input_data={"query": query.query, "method": "POST"},
+        user_id=user_id
+    )
+
     content = Content(role="user", parts=[Part(text=query.query)])
     response = runner.run_async(
         new_message=content,
@@ -249,7 +285,7 @@ async def query(query: Query, request: Request):
     )
 
     return StreamingResponse(
-        process_response(user_id, response), 
+        process_response(response, trace), 
         media_type="text/event-stream"
     )
 
@@ -258,6 +294,8 @@ def handle_signal(signum, frame):
     for agent in sub_agents:
         if hasattr(agent, 'cleanup'):
             agent.cleanup()
+    # Flush any remaining traces before exit
+    tracing_manager.flush()
     exit(0)
 
 def get_sub_agents():
